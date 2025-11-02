@@ -180,36 +180,6 @@
     100% { transform: rotate(360deg); }
     }
 
-    .modal {
-      display: none;
-      position: fixed;
-      z-index: 1000;
-      left: 0;
-      top: 0;
-      width: 100%;
-      height: 100%;
-      background-color: rgba(0, 0, 0, 0.5);
-      overflow: hidden;
-    }
-
-    .modal.active {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .modal-content {
-      background-color: white;
-      border-radius: 0.5rem;
-      width: 90%;
-      max-width: 1200px;
-      height: 90vh;
-      display: flex;
-      flex-direction: column;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-      overflow: hidden;
-    }
-
     .capture-modal {
       display: none;
       position: fixed;
@@ -267,80 +237,11 @@
       margin-top: 1rem;
     }
 
-    .modal-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 1.25rem;
-      border-bottom: 2px solid #667eea;
-      flex-shrink: 0;
-    }
-
-    .modal-header h2 {
-      margin: 0;
-      color: #333;
-      flex: 1;
-    }
-
-    .modal-header-buttons {
-      display: flex;
-      gap: 0.625rem;
-      align-items: center;
-    }
-
-    .download-btn {
-      background: #667eea;
-      color: white;
-      border: none;
-      padding: 0.5rem 1rem;
-      border-radius: 0.25rem;
-      cursor: pointer;
-      font-size: 0.9rem;
-      transition: background 0.2s;
-    }
-
-    .download-btn:hover:not(:disabled) {
-      background: #764ba2;
-    }
-
-    .download-btn:disabled {
-      background: #999;
-      cursor: not-allowed;
-      opacity: 0.7;
-    }
-
-    .modal-body {
-      display: flex;
-      flex-direction: column;
-      flex: 1;
-      overflow: hidden;
-      padding: 1.25rem;
-      gap: 1rem;
-    }
-
-    .close-btn {
-      background: none;
-      border: none;
-      font-size: 1.75rem;
-      color: #667eea;
-      cursor: pointer;
-      padding: 0;
-      width: 32px;
-      height: 32px;
-      display: flex;
-    align-items: center;
-    justify-content: center;
-    }
-
-    body.modal-open {
-    overflow: hidden;
-    }
-
     .hex-dump {
     background: #1e1e1e;
     color: #00ff00;
     font-family: 'Courier New', monospace;
-    font-size: 15px;
+    font-size: 14px;
     padding: 15px;
     border-radius: 4px;
     overflow-x: auto;
@@ -362,12 +263,6 @@
     padding: 20px;
     border-radius: 8px;
     margin-bottom: 20px;
-    }
-
-    #previousScans h3 {
-    margin-top: 0;
-    color: #333;
-    font-size: 1.1em;
     }
 
     .scans-list {
@@ -582,28 +477,30 @@
 
     <!-- Hex Modal -->
     <div id="hexModal" class="modal">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2 id="modalTitle">Frame Hex Dump</h2>
-          <div class="modal-header-buttons">
-            <button class="download-btn" id="downloadFrameBtn" onclick="downloadFrame()" title="Download frame binary">⬇️ Download</button>
-            <button class="close-btn" onclick="closeHexModal()" title="Close (ESC)">&times;</button>
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h1 class="modal-title fs-5" id="modalTitle">Frame Hex Dump</h1>
+            <div class="modal-header-buttons">
+              <button class="btn btn-primary" id="downloadFrameBtn" onclick="downloadFrame()" title="Download frame binary">Download</button>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
           </div>
-        </div>
-        <div class="modal-body">
-          <div class="hex-dump" id="hexContent"></div>
+          <div class="modal-body">
+            <div class="hex-dump" id="hexContent"></div>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- Video Modal -->
     <div id="videoModal" class="modal">
-      <div class="modal-content" style="max-width: 90%; width: 1200px;">
+      <div class="modal-content">
         <div class="modal-header">
-          <h2>Video Playback</h2>
-          <button class="close-btn" onclick="closeVideoModal()" title="Close (ESC)">&times;</button>
+          <h1 class="modal-title fs-5">Video Playback</h1>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
-        <div class="modal-body" style="padding: 20px;">
+        <div class="modal-body">
           <video id="streamVideo" width="100%" height="auto" controls style="border-radius: 4px; background: #000;">
             <source id="videoSource" src="" type="video/mp4">
             Your browser does not support the video tag.
@@ -904,9 +801,10 @@
           modalTitle.textContent = 'Frame ' + frame.frame_number + ' - ' + frame.frame_type + ' (' + frame.total_size + ' bytes)';
         }
 
-        const modal = document.getElementById('hexModal');
-        modal.classList.add('active');
-        document.body.classList.add('modal-open');
+        // Use Bootstrap modal API
+        const hexModalElement = document.getElementById('hexModal');
+        const hexModal = new bootstrap.Modal(hexModalElement);
+        hexModal.show();
       } catch (error) {
         showError('Failed to load hex dump: ' + error.message);
       }
@@ -966,21 +864,28 @@
     }
 
     function closeHexModal() {
-      const modal = document.getElementById('hexModal');
-      modal.classList.remove('active');
-      document.body.classList.remove('modal-open');
+      // Use Bootstrap modal API to close
+      const hexModalElement = document.getElementById('hexModal');
+      const hexModal = bootstrap.Modal.getInstance(hexModalElement);
+      if (hexModal) {
+        hexModal.hide();
+      }
     }
 
     function openVideoModal() {
-      const modal = document.getElementById('videoModal');
-      modal.classList.add('active');
-      document.body.classList.add('modal-open');
+      // Use Bootstrap modal API to open
+      const videoModalElement = document.getElementById('videoModal');
+      const videoModal = new bootstrap.Modal(videoModalElement);
+      videoModal.show();
     }
 
     function closeVideoModal() {
-      const modal = document.getElementById('videoModal');
-      modal.classList.remove('active');
-      document.body.classList.remove('modal-open');
+      // Use Bootstrap modal API to close
+      const videoModalElement = document.getElementById('videoModal');
+      const videoModal = bootstrap.Modal.getInstance(videoModalElement);
+      if (videoModal) {
+        videoModal.hide();
+      }
     }
 
     function showError(message) {
@@ -989,31 +894,8 @@
       errorDiv.classList.remove('d-none');
     }
 
-    // Close modal when clicking outside (on the backdrop)
-    document.addEventListener('click', function(event) {
-      const hexModal = document.getElementById('hexModal');
-      const videoModal = document.getElementById('videoModal');
-      if (event.target === hexModal) {
-        closeHexModal();
-      }
-      if (event.target === videoModal) {
-        closeVideoModal();
-      }
-    });
-
-    // Close modal on ESC key
-    document.addEventListener('keydown', function(event) {
-      if (event.key === 'Escape') {
-        const hexModal = document.getElementById('hexModal');
-        const videoModal = document.getElementById('videoModal');
-        if (hexModal.classList.contains('active')) {
-          closeHexModal();
-        }
-        if (videoModal.classList.contains('active')) {
-          closeVideoModal();
-        }
-      }
-    });
+    // Bootstrap modals handle backdrop clicks and ESC key automatically
+    // No need for custom event listeners
 
     // Load previous scans on page load
     document.addEventListener('DOMContentLoaded', function() {
