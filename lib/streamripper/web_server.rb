@@ -531,7 +531,8 @@ module Streamripper
     def generate_thumbnail(host, scan_id, frames)
       # Generate a thumbnail from the first I-frame
       thumbnail_file = File.join('logs/streams', host, scan_id, 'thumbnail.jpg')
-      return if File.exist?(thumbnail_file)  # Already exists
+      # Delete old thumbnail to force regeneration with new settings
+      File.delete(thumbnail_file) if File.exist?(thumbnail_file)
 
       # Find first I-frame
       i_frame = frames.find { |f| f[:frame_type] == 'I-frame' }
@@ -559,7 +560,8 @@ module Streamripper
 
         # Use ffmpeg to convert H.264 to JPEG thumbnail, resized to 250px wide
         # -vf scale=250:-1 resizes to 250px width with proportional height
-        system("ffmpeg -i #{temp_h264} -vframes 1 -vf scale=250:-1 -q:v 5 -y #{thumbnail_file} 2>/dev/null")
+        # -update 1 allows writing a single image file
+        system("ffmpeg -i #{temp_h264} -vframes 1 -vf scale=250:-1 -q:v 5 -update 1 -y #{thumbnail_file} 2>/dev/null")
 
         # Clean up temp file
         File.delete(temp_h264) if File.exist?(temp_h264)
