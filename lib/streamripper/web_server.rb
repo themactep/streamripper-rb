@@ -113,6 +113,47 @@ module Streamripper
         else
           http_error(400, { error: 'Missing parameters' }.to_json)
         end
+      when /^\/api\/reparse/
+        if method == 'POST'
+          query = path.split('?', 2)[1]
+          if query
+            params = parse_query(query)
+            scan_id = params['scan_id']
+            host = params['host']
+
+            if scan_id && host
+              begin
+                reparse_scan(host, scan_id)
+                http_response('application/json', { status: 'success', message: 'Reparse complete' }.to_json)
+              rescue => e
+                http_error(400, { error: e.message }.to_json)
+              end
+            else
+              http_error(400, { error: 'Missing scan_id or host' }.to_json)
+            end
+          else
+            http_error(400, { error: 'Missing parameters' }.to_json)
+          end
+        else
+          http_error(405, { error: 'Method not allowed' }.to_json)
+        end
+      when /^\/api\/list-scans/
+        begin
+          scans = list_all_scans
+          http_response('application/json', { status: 'success', scans: scans }.to_json)
+        rescue => e
+          http_error(400, { error: e.message }.to_json)
+        end
+      when /^\/thumbnails\//
+        # Serve thumbnail images
+        thumbnail_path = path.sub(/^\/thumbnails\//, '')
+        file_path = File.join('logs/streams', thumbnail_path)
+        if File.exist?(file_path)
+          content = File.binread(file_path)
+          http_response('image/jpeg', content)
+        else
+          http_error(404, { error: 'Thumbnail not found' }.to_json)
+        end
       when /^\/logs\//
         # Serve files from logs directory
         file_path = File.join(Dir.pwd, path)
@@ -175,21 +216,63 @@ module Streamripper
       start_time = Time.now
       packet_count = 0
 
+      packets_dir = File.join(output_mgr.run_dir, 'packets')
+      FileUtils.mkdir_p(packets_dir)
+
+      video_ssrc = nil
+      ssrc_sample_count = 0
+      ssrc_counts = {}
+      all_packets_temp = []  # Store all packets for re-processing
+
       fetcher.fetch do |packet|
         analysis = analyzer.analyze(packet)
-        packets_data << {
-          analysis: analysis,
-          payload: packet[:payload]  # Keep in memory for frame aggregation only
-        }
+
+        # Store all packets for later processing
+        all_packets_temp << { analysis: analysis, packet: packet }
+
+        # Save ALL packets to raw_stream.bin (for forensic preservation)
         saver.save_packet(packet)
-        packet_count += 1
+
+        # Determine video SSRC from first 100 packets
+        if ssrc_sample_count < 100
+          if analysis[:payload_type_code] == 96
+            ssrc = analysis[:ssrc]
+            ssrc_counts[ssrc] = (ssrc_counts[ssrc] || 0) + 1
+          end
+          ssrc_sample_count += 1
+
+          if ssrc_sample_count == 100
+            video_ssrc = ssrc_counts.max_by { |_, count| count }&.first
+          end
+        end
 
         if Time.now - start_time >= duration
           break
         end
       end
 
+      # Now process all packets with known video SSRC
+      all_packets_temp.each do |pkt_data|
+        analysis = pkt_data[:analysis]
+        packet = pkt_data[:packet]
+
+        # Only process video packets (by SSRC) for analysis and individual packet files
+        if video_ssrc && analysis[:ssrc] == video_ssrc
+          packets_data << {
+            analysis: analysis,
+            payload: packet[:payload]
+          }
+
+          packet_count += 1
+
+          # Save individual packet binary file (numbered from 1)
+          packet_file = File.join(packets_dir, "packet#{packet_count.to_s.rjust(6, '0')}.bin")
+          File.binwrite(packet_file, packet[:raw_packet])
+        end
+      end
+
       saver.close
+      puts "Saved #{packet_count} individual packets to packets/ directory"
 
       # Aggregate frames (use payloads from memory)
       frames = aggregate_frames(packets_data)
@@ -207,6 +290,7 @@ module Streamripper
 
       # For H.264, we need to preserve packet order and de-fragment properly
       # Group packets by RTP timestamp to identify frame boundaries
+
       frames_by_rtp = {}
       frame_order = []
       discarded_packets = []
@@ -215,18 +299,10 @@ module Streamripper
       packets_data.each do |pkt_data|
         payload = pkt_data[:payload]
         analysis = pkt_data[:analysis]
-        payload_type = analysis[:payload_type_code]
 
         # Check if packet passes all filters
         is_valid = true
         discard_reason = nil
-
-        # Filter 1: Check if this is a video packet (payload type 96 = H.264)
-        # Discard all non-video packets (audio, etc.)
-        if payload_type != 96
-          is_valid = false
-          discard_reason = "Non-video packet (payload type #{payload_type})"
-        end
 
         # Filter 2: Check if packet has valid payload
         if is_valid && (!payload || payload.length < 1)
@@ -245,17 +321,13 @@ module Streamripper
           end
         end
 
-        # Filter 4: Check if this is a pre-SPS packet (packet before first SPS)
-        if is_valid && !found_sps
+        # Filter 4: Track SPS packets to know when stream starts
+        if is_valid
           first_byte = payload[0].ord
           nal_unit_type = first_byte & 0x1F
 
           if nal_unit_type == 7  # SPS
             found_sps = true
-          else
-            # This packet comes before SPS, discard it
-            is_valid = false
-            discard_reason = "Pre-SPS packet (#{analysis[:frame_type]})"
           end
         end
 
@@ -280,6 +352,7 @@ module Streamripper
       frame_number = 1
       sps_pps_data = nil
       is_first_frame = true
+      frame_packet_ranges = []
 
       frame_order.each do |rtp_ts|
         frame_packets = frames_by_rtp[rtp_ts]
@@ -290,6 +363,17 @@ module Streamripper
           sps_pps_data = extract_sps_pps(frame_data)
         end
 
+        # Track packet range for this frame
+        packet_numbers = frame_packets.map { |p| p[:analysis][:packet_number] }.sort
+        first_pkt = packet_numbers.first
+        last_pkt = packet_numbers.last
+        frame_packet_ranges << {
+          frame_number: frame_number,
+          first_packet: first_pkt,
+          last_packet: last_pkt,
+          packet_count: packet_numbers.length
+        }
+
         # Save individual frame file
         frame_filename = format("frame%05d.bin", frame_number)
         frame_filepath = File.join(frames_dir, frame_filename)
@@ -297,6 +381,10 @@ module Streamripper
         frame_number += 1
         is_first_frame = false
       end
+
+      # Save frame packet ranges metadata
+      frame_ranges_file = output_mgr.get_output_path('frame_packet_ranges.json')
+      File.write(frame_ranges_file, frame_packet_ranges.to_json)
 
       # Save discarded packets for analysis
       save_discarded_packets(discarded_packets, discarded_dir)
@@ -380,1020 +468,8 @@ module Streamripper
     end
 
     def render_ui
-      <<~HTML
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Streamripper - RTSP Stream Analyzer</title>
-          <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
-          <style>
-            * {
-              margin: 0;
-              padding: 0;
-              box-sizing: border-box;
-            }
-            
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-              min-height: 100vh;
-              padding: 20px;
-            }
-            
-            .container {
-              max-width: 1400px;
-              margin: 0 auto;
-              background: white;
-              border-radius: 12px;
-              box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-              overflow: hidden;
-            }
-            
-            .header {
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-              color: white;
-              padding: 40px;
-              text-align: center;
-            }
-            
-            .header h1 {
-              font-size: 2.5em;
-              margin-bottom: 10px;
-            }
-
-            .header a {
-              color: white;
-              text-decoration: none;
-              transition: opacity 0.3s;
-            }
-
-            .header a:hover {
-              opacity: 0.8;
-            }
-            
-            .content {
-              padding: 40px;
-            }
-            
-            .input-section {
-              background: #f5f5f5;
-              padding: 20px;
-              border-radius: 8px;
-              margin-bottom: 30px;
-            }
-            
-            .input-group {
-              display: flex;
-              gap: 10px;
-              margin-bottom: 10px;
-            }
-            
-            input[type="text"],
-            input[type="number"] {
-              flex: 1;
-              padding: 12px;
-              border: 1px solid #ddd;
-              border-radius: 4px;
-              font-size: 1em;
-            }
-            
-            button {
-              padding: 12px 24px;
-              background: #667eea;
-              color: white;
-              border: none;
-              border-radius: 4px;
-              cursor: pointer;
-              font-size: 1em;
-              transition: background 0.3s;
-            }
-            
-            button:hover {
-              background: #764ba2;
-            }
-            
-            button:disabled {
-              background: #ccc;
-              cursor: not-allowed;
-            }
-            
-            .stats-grid {
-              display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-              gap: 15px;
-              margin-bottom: 30px;
-            }
-            
-            .stat-card {
-              background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-              padding: 20px;
-              border-radius: 8px;
-              border-left: 4px solid #667eea;
-            }
-            
-            .stat-card h3 {
-              color: #667eea;
-              font-size: 0.9em;
-              text-transform: uppercase;
-              margin-bottom: 10px;
-            }
-            
-            .stat-card .value {
-              font-size: 2em;
-              font-weight: bold;
-              color: #333;
-            }
-            
-            .frames-table {
-              width: 100%;
-              border-collapse: collapse;
-              margin-top: 20px;
-            }
-            
-            .frames-table th {
-              background: #667eea;
-              color: white;
-              padding: 12px;
-              text-align: left;
-              font-weight: 600;
-            }
-            
-            .frames-table td {
-              padding: 10px 12px;
-              border-bottom: 1px solid #eee;
-            }
-            
-            .frames-table tr:hover {
-              background: #f5f5f5;
-              cursor: pointer;
-            }
-            
-            .frame-type {
-              display: inline-block;
-              padding: 4px 8px;
-              border-radius: 4px;
-              font-size: 0.85em;
-              font-weight: 600;
-              color: white;
-            }
-            
-            .frame-type.i-frame { background: #1b5e20; }
-            .frame-type.p-frame { background: #81c784; }
-            .frame-type.sps { background: #ffd93d; color: #333; }
-            .frame-type.pps { background: #ffd93d; color: #333; }
-            .frame-type.audio { background: #1976d2; }
-            .frame-type.unknown { background: #d32f2f; }
-            
-            .loading {
-              display: none;
-              text-align: center;
-              padding: 20px;
-            }
-            
-            .spinner {
-              border: 4px solid #f3f3f3;
-              border-top: 4px solid #667eea;
-              border-radius: 50%;
-              width: 40px;
-              height: 40px;
-              animation: spin 1s linear infinite;
-              margin: 0 auto;
-            }
-            
-            @keyframes spin {
-              0% { transform: rotate(0deg); }
-              100% { transform: rotate(360deg); }
-            }
-            
-            .modal {
-              display: none;
-              position: fixed;
-              z-index: 1000;
-              left: 0;
-              top: 0;
-              width: 100%;
-              height: 100%;
-              background-color: rgba(0, 0, 0, 0.5);
-              overflow: hidden;
-            }
-
-            .modal.active {
-              display: flex;
-              align-items: center;
-              justify-content: center;
-            }
-
-            .modal-content {
-              background-color: white;
-              border-radius: 8px;
-              width: 90%;
-              max-width: 1200px;
-              height: 90vh;
-              display: flex;
-              flex-direction: column;
-              box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-              overflow: hidden;
-            }
-
-            .capture-modal {
-              display: none;
-              position: fixed;
-              z-index: 2000;
-              left: 0;
-              top: 0;
-              width: 100%;
-              height: 100%;
-              background-color: rgba(0, 0, 0, 0.7);
-              justify-content: center;
-              align-items: center;
-            }
-
-            .capture-modal.active {
-              display: flex;
-            }
-
-            .capture-modal-content {
-              background: white;
-              padding: 40px;
-              border-radius: 12px;
-              text-align: center;
-              box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-              min-width: 300px;
-            }
-
-            .capture-modal-spinner {
-              border: 4px solid #f3f3f3;
-              border-top: 4px solid #667eea;
-              border-radius: 50%;
-              width: 60px;
-              height: 60px;
-              animation: spin 1s linear infinite;
-              margin: 0 auto 20px;
-            }
-
-            .capture-modal-text {
-              font-size: 1.2em;
-              color: #333;
-              margin-bottom: 15px;
-              font-weight: 500;
-            }
-
-            .capture-modal-countdown {
-              font-size: 2.5em;
-              color: #667eea;
-              font-weight: bold;
-              font-family: 'Courier New', monospace;
-              margin: 20px 0;
-            }
-
-            .capture-modal-subtext {
-              font-size: 0.9em;
-              color: #666;
-              margin-top: 15px;
-            }
-
-            .modal-header {
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              padding: 20px;
-              border-bottom: 2px solid #667eea;
-              flex-shrink: 0;
-            }
-
-            .modal-header h2 {
-              margin: 0;
-              color: #333;
-              flex: 1;
-            }
-
-            .modal-header-buttons {
-              display: flex;
-              gap: 10px;
-              align-items: center;
-            }
-
-            .download-btn {
-              background: #667eea;
-              color: white;
-              border: none;
-              padding: 8px 16px;
-              border-radius: 4px;
-              cursor: pointer;
-              font-size: 0.9em;
-              transition: background 0.2s;
-            }
-
-            .download-btn:hover:not(:disabled) {
-              background: #764ba2;
-            }
-
-            .download-btn:disabled {
-              background: #999;
-              cursor: not-allowed;
-              opacity: 0.7;
-            }
-
-            .modal-body {
-              display: flex;
-              flex-direction: column;
-              flex: 1;
-              overflow: hidden;
-              padding: 20px;
-              gap: 15px;
-            }
-
-            .close-btn {
-              background: none;
-              border: none;
-              font-size: 28px;
-              color: #667eea;
-              cursor: pointer;
-              padding: 0;
-              width: 32px;
-              height: 32px;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-            }
-
-            body.modal-open {
-              overflow: hidden;
-            }
-            
-            .hex-dump {
-              background: #1e1e1e;
-              color: #00ff00;
-              font-family: 'Courier New', monospace;
-              font-size: 15px;
-              padding: 15px;
-              border-radius: 4px;
-              overflow-x: auto;
-              line-height: 1.6;
-              white-space: pre;
-            }
-            
-            .error {
-              background: #ff6b6b;
-              color: white;
-              padding: 15px;
-              border-radius: 4px;
-              margin-bottom: 20px;
-              display: none;
-            }
-
-            #previousScans {
-              background: #f5f5f5;
-              padding: 20px;
-              border-radius: 8px;
-              margin-bottom: 20px;
-            }
-
-            #previousScans h3 {
-              margin-top: 0;
-              color: #333;
-              font-size: 1.1em;
-            }
-
-            .scans-list {
-              display: grid;
-              grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-              gap: 15px;
-            }
-
-            .scan-card {
-              background: white;
-              padding: 15px;
-              border-radius: 4px;
-              border-left: 4px solid #667eea;
-              box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-              transition: transform 0.2s, box-shadow 0.2s;
-            }
-
-            .scan-card:hover {
-              transform: translateY(-2px);
-              box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-            }
-
-            .scan-card-time {
-              font-weight: bold;
-              color: #667eea;
-              font-size: 0.9em;
-            }
-
-            .scan-card-host {
-              color: #666;
-              font-size: 0.85em;
-              margin-top: 5px;
-            }
-
-            .scan-card-stats {
-              color: #999;
-              font-size: 0.8em;
-              margin-top: 8px;
-            }
-
-            .scan-card-links {
-              display: flex;
-              gap: 10px;
-              margin-top: 10px;
-            }
-
-            .scan-link {
-              flex: 1;
-              padding: 6px 10px;
-              background: #667eea;
-              color: white;
-              text-decoration: none;
-              border-radius: 3px;
-              font-size: 0.8em;
-              text-align: center;
-              transition: background 0.2s;
-              border: none;
-              cursor: pointer;
-              font-family: inherit;
-            }
-
-            .scan-link:hover {
-              background: #764ba2;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1><a href="/">🎬 Streamripper</a></h1>
-              <p>Real-time RTSP Stream Analysis & Forensics</p>
-            </div>
-            
-            <div class="content">
-              <div class="error" id="errorMsg"></div>
-              
-              <div class="input-section">
-                <div class="input-group">
-                  <input type="text" id="rtspUrl" placeholder="RTSP URL (e.g., rtsp://user:pass@host/ch0)" value="rtsp://thingino:thingino@192.168.88.31/ch0">
-                  <input type="number" id="duration" placeholder="Duration (seconds)" value="5" min="1" max="300">
-                  <button onclick="startCapture()">Start Capture</button>
-                </div>
-              </div>
-
-              <div class="capture-modal" id="captureModal">
-                <div class="capture-modal-content">
-                  <div class="capture-modal-spinner"></div>
-                  <div class="capture-modal-text">Capturing Stream...</div>
-                  <div class="capture-modal-countdown" id="countdownDisplay">0:00</div>
-                  <div class="capture-modal-subtext">Please wait while the stream is being captured and analyzed</div>
-                </div>
-              </div>
-
-              <div id="results" style="display: none;">
-                <div class="stats-grid">
-                  <div class="stat-card">
-                    <h3>Total Frames</h3>
-                    <div class="value" id="frameCount">0</div>
-                  </div>
-                  <div class="stat-card">
-                    <h3>Total Packets</h3>
-                    <div class="value" id="packetCount">0</div>
-                  </div>
-                  <div class="stat-card">
-                    <h3>Duration</h3>
-                    <div class="value" id="captureDuration">0s</div>
-                  </div>
-                  <div class="stat-card">
-                    <h3>Frame Rate</h3>
-                    <div class="value" id="frameRate">0 fps</div>
-                  </div>
-                </div>
-
-                <h2 style="margin-top: 40px;">Analysis Charts</h2>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 20px;">
-                  <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                    <h3 style="margin-bottom: 15px; color: #333;">Time Deviation (µs)</h3>
-                    <canvas id="deviationChart"></canvas>
-                  </div>
-                  <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                    <h3 style="margin-bottom: 15px; color: #333;">Packet Sizes (bytes)</h3>
-                    <canvas id="packetSizeChart"></canvas>
-                  </div>
-                </div>
-
-                <h2 style="margin-top: 40px;">Frame Summary</h2>
-                <table class="frames-table">
-                  <thead>
-                    <tr>
-                      <th>Frame #</th>
-                      <th>Type</th>
-                      <th>Size</th>
-                      <th>Packets</th>
-                      <th>RTP TS</th>
-                      <th>Deviation</th>
-                    </tr>
-                  </thead>
-                  <tbody id="framesBody"></tbody>
-                </table>
-
-                <h2 style="margin-top: 40px;">Video Playback</h2>
-                <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-top: 20px;">
-                  <video id="streamVideo" width="100%" height="auto" controls style="max-width: 100%; border-radius: 4px; background: #000;">
-                    <source id="videoSource" src="" type="video/mp4">
-                    Your browser does not support the video tag.
-                  </video>
-                  <p id="videoStatus" style="margin-top: 10px; color: #666; font-size: 14px;">Loading video...</p>
-                </div>
-              </div>
-
-              <div id="previousScans" style="display: none; margin-top: 40px; padding-top: 40px; border-top: 2px solid #eee;">
-                <h2>Previous Scans</h2>
-                <div id="scansList" class="scans-list"></div>
-              </div>
-            </div>
-          </div>
-          
-          <!-- Hex Modal -->
-          <div id="hexModal" class="modal">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h2 id="modalTitle">Frame Hex Dump</h2>
-                <div class="modal-header-buttons">
-                  <button class="download-btn" id="downloadFrameBtn" onclick="downloadFrame()" title="Download frame binary">⬇️ Download</button>
-                  <button class="close-btn" onclick="closeHexModal()" title="Close (ESC)">&times;</button>
-                </div>
-              </div>
-              <div class="modal-body">
-                <div class="hex-dump" id="hexContent"></div>
-              </div>
-            </div>
-          </div>
-          
-          <script>
-            let captureData = null;
-            let currentFrame = null;
-            let downloadInProgress = false;
-            let countdownInterval = null;
-            let deviationChart = null;
-            let packetSizeChart = null;
-
-            async function startCapture() {
-              const rtspUrl = document.getElementById('rtspUrl').value;
-              const duration = parseInt(document.getElementById('duration').value);
-
-              if (!rtspUrl) {
-                showError('Please enter an RTSP URL');
-                return;
-              }
-
-              // Show capture modal
-              const captureModal = document.getElementById('captureModal');
-              captureModal.classList.add('active');
-              document.getElementById('results').style.display = 'none';
-              document.getElementById('errorMsg').style.display = 'none';
-
-              // Preset the countdown display with initial value
-              const countdownDisplay = document.getElementById('countdownDisplay');
-              const minutes = Math.floor(duration / 60);
-              const seconds = duration % 60;
-              countdownDisplay.textContent = minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
-
-              // Start countdown
-              let remainingTime = duration;
-
-              countdownInterval = setInterval(() => {
-                remainingTime--;
-
-                // Ensure remainingTime doesn't go below 0
-                if (remainingTime < 0) {
-                  remainingTime = 0;
-                }
-
-                const minutes = Math.floor(remainingTime / 60);
-                const seconds = remainingTime % 60;
-                countdownDisplay.textContent = minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
-
-                if (remainingTime <= 0) {
-                  clearInterval(countdownInterval);
-                  countdownInterval = null;
-                }
-              }, 1000);
-
-              try {
-                const response = await fetch('/api/capture', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ rtsp_url: rtspUrl, duration: duration })
-                });
-
-                if (!response.ok) {
-                  const error = await response.json();
-                  throw new Error(error.error || 'Capture failed');
-                }
-
-                captureData = await response.json();
-
-                // Extract host and scan_id from the capture response
-                if (captureData.host && captureData.scan_id) {
-                  // Update URL to the new scan
-                  const newUrl = '?host=' + encodeURIComponent(captureData.host) +
-                                 '&scan_id=' + encodeURIComponent(captureData.scan_id);
-                  window.history.pushState({ host: captureData.host, scan_id: captureData.scan_id }, '', newUrl);
-                }
-
-                displayResults(captureData);
-              } catch (error) {
-                showError(error.message);
-              } finally {
-                // Clear countdown interval
-                if (countdownInterval) {
-                  clearInterval(countdownInterval);
-                  countdownInterval = null;
-                }
-
-                // Hide capture modal
-                const captureModal = document.getElementById('captureModal');
-                captureModal.classList.remove('active');
-                document.getElementById('results').style.display = 'block';
-              }
-            }
-            
-            function displayResults(data) {
-              document.getElementById('frameCount').textContent = data.frame_count;
-              document.getElementById('packetCount').textContent = data.packet_count;
-              document.getElementById('captureDuration').textContent = data.duration + 's';
-              document.getElementById('frameRate').textContent = (data.frame_count / data.duration).toFixed(2) + ' fps';
-
-              const tbody = document.getElementById('framesBody');
-              tbody.innerHTML = '';
-
-              data.frames.forEach(frame => {
-                const row = document.createElement('tr');
-                const typeClass = frame.frame_type.toLowerCase().replace('-', '-');
-                row.innerHTML = `
-                  <td>\${frame.frame_number}</td>
-                  <td><span class="frame-type \${typeClass}">\${frame.frame_type}</span></td>
-                  <td>\${frame.total_size} bytes</td>
-                  <td>\${frame.packet_count}</td>
-                  <td>\${frame.rtp_timestamp}</td>
-                  <td>\${frame.deviation} µs</td>
-                `;
-                row.onclick = () => showHexDump(frame);
-                tbody.appendChild(row);
-              });
-
-              // Render charts
-              renderDeviationChart(data.frames);
-              renderPacketSizeChart(data.frames);
-
-              // Load video if available
-              if (data.host && data.scan_id) {
-                loadVideo(data.host, data.scan_id);
-              }
-
-              document.getElementById('results').style.display = 'block';
-              showPreviousScansSection();
-
-              // Scroll to results
-              document.getElementById('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
-
-            function loadVideo(host, scanId) {
-              const videoSource = document.getElementById('videoSource');
-              const videoStatus = document.getElementById('videoStatus');
-              const videoElement = document.getElementById('streamVideo');
-
-              if (!videoSource || !videoStatus || !videoElement) {
-                console.error('Video elements not found');
-                return;
-              }
-
-              const mp4Url = '/logs/streams/' + encodeURIComponent(host) + '/' + encodeURIComponent(scanId) + '/stream.mp4';
-
-              console.log('Loading video from:', mp4Url);
-              videoSource.src = mp4Url;
-              videoElement.load();
-
-              // Check if video file exists and is valid
-              fetch(mp4Url, { method: 'HEAD' })
-                .then(response => {
-                  if (response.ok) {
-                    const size = response.headers.get('content-length');
-                    if (size > 10000) {
-                      videoStatus.textContent = '✓ Video ready for playback';
-                      videoStatus.style.color = '#4CAF50';
-                    } else {
-                      videoStatus.textContent = '⏳ Video is being generated...';
-                      videoStatus.style.color = '#FF9800';
-                    }
-                  } else {
-                    videoStatus.textContent = '⏳ Video is being generated...';
-                    videoStatus.style.color = '#FF9800';
-                  }
-                })
-                .catch(error => {
-                  videoStatus.textContent = '⏳ Video is being generated...';
-                  videoStatus.style.color = '#FF9800';
-                  console.log('Video file not yet available:', error);
-                });
-            }
-
-            function renderDeviationChart(frames) {
-              // Destroy existing chart if it exists
-              if (deviationChart) {
-                deviationChart.destroy();
-                deviationChart = null;
-              }
-
-              const ctx = document.getElementById('deviationChart').getContext('2d');
-
-              const labels = frames.map(f => 'Frame ' + f.frame_number);
-              const deviations = frames.map(f => f.deviation);
-
-              // Determine color based on deviation value
-              const colors = deviations.map(d => {
-                if (d === 0) return '#4CAF50'; // Green for 0
-                if (d > 0) return '#FF9800'; // Orange for positive
-                return '#F44336'; // Red for negative
-              });
-
-              deviationChart = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                  labels: labels,
-                  datasets: [{
-                    label: 'Time Deviation (µs)',
-                    data: deviations,
-                    backgroundColor: colors,
-                    borderColor: colors,
-                    borderWidth: 1
-                  }]
-                },
-                options: {
-                  responsive: true,
-                  maintainAspectRatio: true,
-                  plugins: {
-                    legend: {
-                      display: true,
-                      position: 'top'
-                    }
-                  },
-                  scales: {
-                    y: {
-                      beginAtZero: true,
-                      title: {
-                        display: true,
-                        text: 'Deviation (µs)'
-                      }
-                    }
-                  }
-                }
-              });
-            }
-
-            function renderPacketSizeChart(frames) {
-              // Destroy existing chart if it exists
-              if (packetSizeChart) {
-                packetSizeChart.destroy();
-                packetSizeChart = null;
-              }
-
-              const ctx = document.getElementById('packetSizeChart').getContext('2d');
-
-              const labels = frames.map(f => 'Frame ' + f.frame_number);
-              const sizes = frames.map(f => f.total_size);
-
-              packetSizeChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                  labels: labels,
-                  datasets: [{
-                    label: 'Packet Size (bytes)',
-                    data: sizes,
-                    borderColor: '#667eea',
-                    backgroundColor: 'rgba(102, 126, 234, 0.1)',
-                    borderWidth: 2,
-                    fill: true,
-                    tension: 0.4,
-                    pointBackgroundColor: '#667eea',
-                    pointBorderColor: '#fff',
-                    pointBorderWidth: 2,
-                    pointRadius: 4,
-                    pointHoverRadius: 6
-                  }]
-                },
-                options: {
-                  responsive: true,
-                  maintainAspectRatio: true,
-                  plugins: {
-                    legend: {
-                      display: true,
-                      position: 'top'
-                    }
-                  },
-                  scales: {
-                    y: {
-                      beginAtZero: true,
-                      title: {
-                        display: true,
-                        text: 'Size (bytes)'
-                      }
-                    }
-                  }
-                }
-              });
-            }
-            
-            async function showHexDump(frame) {
-              try {
-                // Store current frame for download
-                currentFrame = frame;
-
-                const response = await fetch('/api/frame-hex?frame=' + encodeURIComponent(frame.payload));
-                const data = await response.json();
-                document.getElementById('hexContent').textContent = data.hex;
-
-                // Update modal header with frame info
-                const modalTitle = document.getElementById('modalTitle');
-                if (modalTitle) {
-                  modalTitle.textContent = 'Frame ' + frame.frame_number + ' - ' + frame.frame_type + ' (' + frame.total_size + ' bytes)';
-                }
-
-                const modal = document.getElementById('hexModal');
-                modal.classList.add('active');
-                document.body.classList.add('modal-open');
-              } catch (error) {
-                showError('Failed to load hex dump: ' + error.message);
-              }
-            }
-
-            function downloadFrame() {
-              // Prevent double downloads with debounce
-              if (downloadInProgress) {
-                return;
-              }
-
-              if (!currentFrame) {
-                showError('No frame selected');
-                return;
-              }
-
-              try {
-                // Set download in progress flag
-                downloadInProgress = true;
-                const downloadBtn = document.getElementById('downloadFrameBtn');
-                const originalText = downloadBtn.textContent;
-                downloadBtn.textContent = '⏳ Downloading...';
-                downloadBtn.disabled = true;
-
-                // Decode base64 payload to binary
-                const binaryString = atob(currentFrame.payload);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) {
-                  bytes[i] = binaryString.charCodeAt(i);
-                }
-
-                // Create blob and download
-                const blob = new Blob([bytes], { type: 'application/octet-stream' });
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = 'frame_' + currentFrame.frame_number.toString().padStart(5, '0') + '_' + currentFrame.frame_type.toLowerCase() + '.bin';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(url);
-
-                // Reset button after download completes
-                setTimeout(() => {
-                  downloadBtn.textContent = originalText;
-                  downloadBtn.disabled = false;
-                  downloadInProgress = false;
-                }, 1000);
-              } catch (error) {
-                showError('Failed to download frame: ' + error.message);
-                // Reset on error
-                downloadInProgress = false;
-                const downloadBtn = document.getElementById('downloadFrameBtn');
-                downloadBtn.textContent = '⬇️ Download';
-                downloadBtn.disabled = false;
-              }
-            }
-
-            function closeHexModal() {
-              const modal = document.getElementById('hexModal');
-              modal.classList.remove('active');
-              document.body.classList.remove('modal-open');
-            }
-
-            function showError(message) {
-              const errorDiv = document.getElementById('errorMsg');
-              errorDiv.textContent = message;
-              errorDiv.style.display = 'block';
-            }
-
-            // Close modal when clicking outside (on the backdrop)
-            document.addEventListener('click', function(event) {
-              const modal = document.getElementById('hexModal');
-              if (event.target === modal) {
-                closeHexModal();
-              }
-            });
-
-            // Close modal on ESC key
-            document.addEventListener('keydown', function(event) {
-              if (event.key === 'Escape') {
-                const modal = document.getElementById('hexModal');
-                if (modal.classList.contains('active')) {
-                  closeHexModal();
-                }
-              }
-            });
-
-            // Load previous scans on page load
-            document.addEventListener('DOMContentLoaded', function() {
-              loadPreviousScans();
-
-              // Check if URL has scan parameters
-              const params = new URLSearchParams(window.location.search);
-              const host = params.get('host');
-              const scanId = params.get('scan_id');
-
-              if (host && scanId) {
-                // Load the scan from URL parameters
-                loadScanData(host, scanId);
-              }
-            });
-
-            async function loadPreviousScans() {
-              try {
-                const response = await fetch('/api/scans');
-                const data = await response.json();
-
-                if (data.scans && data.scans.length > 0) {
-                  displayPreviousScans(data.scans);
-                }
-              } catch (error) {
-                console.error('Failed to load previous scans:', error);
-              }
-            }
-
-            function displayPreviousScans(scans) {
-              const scansList = document.getElementById('scansList');
-              const previousScans = document.getElementById('previousScans');
-
-              scansList.innerHTML = '';
-
-              scans.forEach(scan => {
-                const card = document.createElement('div');
-                card.className = 'scan-card';
-                card.innerHTML = `
-                  <div class="scan-card-time">${scan.time}</div>
-                  <div class="scan-card-host">${scan.host}</div>
-                  <div class="scan-card-stats">${scan.packet_count} packets</div>
-                  <div class="scan-card-links">
-                    <button class="scan-link" onclick="loadScanData('${scan.host}', '${scan.scan_id}')">📊 Load</button>
-                    <a href="${scan.json_url}" class="scan-link" target="_blank">📋 JSON</a>
-                  </div>
-                `;
-                scansList.appendChild(card);
-              });
-
-              // Always show previous scans
-              previousScans.style.display = 'block';
-            }
-
-            // Show previous scans after results are displayed
-            function showPreviousScansSection() {
-              const previousScans = document.getElementById('previousScans');
-              previousScans.style.display = 'block';
-            }
-
-            async function loadScanData(host, scanId) {
-              try {
-                document.getElementById('results').style.display = 'none';
-                document.getElementById('errorMsg').style.display = 'none';
-
-                const response = await fetch('/api/load-scan?host=' + encodeURIComponent(host) + '&scan_id=' + encodeURIComponent(scanId));
-
-                if (!response.ok) {
-                  const error = await response.json();
-                  throw new Error(error.error || 'Failed to load scan');
-                }
-
-                const data = await response.json();
-                displayResults(data);
-
-                // Update URL to include scan identifier
-                const newUrl = '?host=' + encodeURIComponent(host) + '&scan_id=' + encodeURIComponent(scanId);
-                window.history.pushState({ host: host, scan_id: scanId }, '', newUrl);
-              } catch (error) {
-                showError('Failed to load scan: ' + error.message);
-              }
-            }
-          </script>
-        </body>
-        </html>
-      HTML
+      template_file = File.join(File.dirname(__FILE__), 'ui_template.html')
+      File.read(template_file)
     end
 
     def load_scan_data(host, scan_id)
@@ -1411,8 +487,15 @@ module Streamripper
         duration = ((last_time - first_time) / 1_000_000.0).round(2)
       end
 
+      # Build packet lookup by packet number for metadata
+      packet_by_number = {}
+      data.each { |p| packet_by_number[p['packet_number']] = p }
+
       # Aggregate frames with host and scan_id for frame file loading
-      frames = aggregate_frames_from_data(data, host, scan_id)
+      frames = aggregate_frames_from_data(data, host, scan_id, packet_by_number)
+
+      # Generate thumbnail if it doesn't exist
+      generate_thumbnail(host, scan_id, frames)
 
       {
         status: 'success',
@@ -1425,7 +508,175 @@ module Streamripper
       }
     end
 
-    def aggregate_frames_from_data(packets, host = nil, scan_id = nil)
+    def generate_thumbnail(host, scan_id, frames)
+      # Generate a thumbnail from the first I-frame
+      thumbnail_file = File.join('logs/streams', host, scan_id, 'thumbnail.jpg')
+      return if File.exist?(thumbnail_file)  # Already exists
+
+      # Find first I-frame
+      i_frame = frames.find { |f| f[:frame_type] == 'I-frame' }
+      return unless i_frame
+
+      # Get the frame file
+      frames_dir = File.join('logs/streams', host, scan_id, 'frames')
+      frame_file = File.join(frames_dir, "frame#{i_frame[:frame_number].to_s.rjust(5, '0')}.bin")
+      return unless File.exist?(frame_file)
+
+      # Create a temporary H.264 file with SPS/PPS headers for ffmpeg
+      temp_h264 = File.join('logs/streams', host, scan_id, '.temp_thumb.h264')
+      begin
+        # Find SPS and PPS frames
+        sps_frame = frames.find { |f| f[:frame_type] == 'SPS' }
+        pps_frame = frames.find { |f| f[:frame_type] == 'PPS' }
+
+        # Build H.264 file with SPS, PPS, and I-frame
+        h264_data = ''
+        h264_data += File.binread(File.join(frames_dir, "frame#{sps_frame[:frame_number].to_s.rjust(5, '0')}.bin")) if sps_frame
+        h264_data += File.binread(File.join(frames_dir, "frame#{pps_frame[:frame_number].to_s.rjust(5, '0')}.bin")) if pps_frame
+        h264_data += File.binread(frame_file)
+
+        File.binwrite(temp_h264, h264_data)
+
+        # Use ffmpeg to convert H.264 to JPEG thumbnail
+        system("ffmpeg -i #{temp_h264} -vframes 1 -q:v 5 -y #{thumbnail_file} 2>/dev/null")
+
+        # Clean up temp file
+        File.delete(temp_h264) if File.exist?(temp_h264)
+      rescue => e
+        # Clean up on error
+        File.delete(temp_h264) if File.exist?(temp_h264)
+      end
+    end
+
+    def list_all_scans
+      # List all available scans with metadata
+      scans = []
+      streams_dir = 'logs/streams'
+
+      return scans unless Dir.exist?(streams_dir)
+
+      Dir.glob("#{streams_dir}/*").each do |host_dir|
+        host = File.basename(host_dir)
+
+        Dir.glob("#{host_dir}/*").each do |scan_dir|
+          next unless File.directory?(scan_dir)
+
+          scan_id = File.basename(scan_dir)
+          analysis_file = File.join(scan_dir, 'analysis.json')
+          thumbnail_file = File.join(scan_dir, 'thumbnail.jpg')
+
+          next unless File.exist?(analysis_file)
+
+          begin
+            data = JSON.parse(File.read(analysis_file))
+
+            # Calculate duration
+            duration = 0
+            if data.length > 1
+              first_time = data.first['wallclock_time_us']
+              last_time = data.last['wallclock_time_us']
+              duration = ((last_time - first_time) / 1_000_000.0).round(2)
+            end
+
+            # Check if thumbnail exists
+            has_thumbnail = File.exist?(thumbnail_file)
+
+            scans << {
+              host: host,
+              scan_id: scan_id,
+              packet_count: data.length,
+              frame_count: data.map { |p| p['rtp_timestamp_raw'] }.uniq.length,
+              duration: duration,
+              has_thumbnail: has_thumbnail,
+              thumbnail_url: has_thumbnail ? "/thumbnails/#{host}/#{scan_id}/thumbnail.jpg" : nil
+            }
+          rescue
+            # Skip scans with errors
+          end
+        end
+      end
+
+      # Sort by scan_id (which encodes the timestamp), newest first
+      scans.sort_by { |s| s[:scan_id] }.reverse
+    end
+
+    def reparse_scan(host, scan_id)
+      # Reparse the raw stream data and regenerate all analysis files
+      scan_dir = File.join('logs/streams', host, scan_id)
+
+      raise "Scan directory not found: #{scan_dir}" unless Dir.exist?(scan_dir)
+
+      # Use the raw_stream_reparser to regenerate everything
+      reparser = RawStreamReparser.new(scan_dir)
+      reparser.reparse
+
+      true
+    end
+
+    def aggregate_frames_from_data(packets, host = nil, scan_id = nil, packet_by_number = nil)
+      # If we have frame files, use them as the source of truth
+      if host && scan_id
+        frames_dir = File.join('logs/streams', host, scan_id, 'frames')
+        if Dir.exist?(frames_dir)
+          frame_files = Dir.glob("#{frames_dir}/frame*.bin").sort
+
+          # Load frame packet ranges metadata if available
+          ranges_file = File.join('logs/streams', host, scan_id, 'frame_packet_ranges.json')
+          frame_ranges = {}
+          if File.exist?(ranges_file)
+            JSON.parse(File.read(ranges_file)).each do |r|
+              frame_ranges[r['frame_number']] = r
+            end
+          end
+
+          return frame_files.map.with_index do |frame_file, idx|
+            frame_number = idx + 1
+            frame_payload = File.binread(frame_file)
+            frame_file_size = frame_payload.bytesize
+
+            # Extract frame type from H.264 NAL unit
+            frame_type = 'Unknown'
+            if frame_payload.length >= 4 && frame_payload[0..2] == "\x00\x00\x01"
+              nal_type = frame_payload[3].ord & 0x1F
+              frame_type = case nal_type
+                           when 5 then 'I-frame'
+                           when 1 then 'P-frame'
+                           when 7 then 'SPS'
+                           when 8 then 'PPS'
+                           else "NAL-#{nal_type}"
+                           end
+            end
+
+            # Get packet range from metadata
+            range_data = frame_ranges[frame_number] || {}
+
+            # Get RTP timestamp and deviation from first packet in frame
+            rtp_timestamp = 0
+            deviation = 0
+            if range_data['first_packet'] && packet_by_number
+              first_pkt = packet_by_number[range_data['first_packet']]
+              if first_pkt
+                rtp_timestamp = first_pkt['rtp_timestamp_raw'] || 0
+                deviation = first_pkt['timestamp_deviation_us'] || 0
+              end
+            end
+
+            {
+              frame_number: frame_number,
+              frame_type: frame_type,
+              packet_count: range_data['packet_count'] || 1,
+              total_size: frame_file_size,
+              rtp_timestamp: rtp_timestamp,
+              first_packet: range_data['first_packet'] || 0,
+              last_packet: range_data['last_packet'] || 0,
+              deviation: deviation,
+              payload: Base64.encode64(frame_payload).chomp
+            }
+          end
+        end
+      end
+
+      # Fallback: group by RTP timestamp if no frame files
       frames_by_rtp = {}
       frame_order = []
 
@@ -1442,33 +693,16 @@ module Streamripper
         frame_packets = frames_by_rtp[rtp_ts]
         frame_number = idx + 1
 
-        # ALWAYS load frame binary file - this is the single source of truth
-        frame_payload = ''
-        frame_file_size = 0
-        if host && scan_id
-          frame_file = File.join('logs/streams', host, scan_id, 'frames', "frame#{frame_number.to_s.rjust(5, '0')}.bin")
-          if File.exist?(frame_file)
-            frame_payload = File.binread(frame_file)
-            frame_file_size = frame_payload.bytesize
-          else
-            # Frame file doesn't exist - show error
-            frame_payload = "[ERROR: Frame file not found]"
-          end
-        else
-          # No host/scan_id provided - show error
-          frame_payload = "[ERROR: Frame data not available - no host/scan_id]"
-        end
-
         {
           frame_number: frame_number,
           frame_type: frame_packets.first['frame_type'].split('(')[0],
           packet_count: frame_packets.length,
-          total_size: frame_file_size,  # Use actual frame file size, not raw packet size
+          total_size: 0,
           rtp_timestamp: rtp_ts,
           first_packet: frame_packets.first['packet_number'],
           last_packet: frame_packets.last['packet_number'],
           deviation: frame_packets.first['timestamp_deviation_us'],
-          payload: Base64.encode64(frame_payload).chomp
+          payload: Base64.encode64('').chomp
         }
       end
     end
@@ -1568,6 +802,10 @@ module Streamripper
     def save_discarded_packets(discarded_packets, discarded_dir)
       # Save discarded packets to separate directory for analysis
 
+      # Create packets subdirectory
+      packets_dir = File.join(discarded_dir, 'packets')
+      FileUtils.mkdir_p(packets_dir)
+
       # Save raw binary data
       raw_file = File.join(discarded_dir, 'discarded_packets.bin')
       File.open(raw_file, 'wb') do |f|
@@ -1575,6 +813,13 @@ module Streamripper
           payload = pkt_data[:payload]
           f.write(payload) if payload
         end
+      end
+
+      # Save individual packet binary files
+      discarded_packets.each_with_index do |pkt_data, idx|
+        packet_num = idx + 1
+        packet_file = File.join(packets_dir, "packet#{packet_num.to_s.rjust(6, '0')}.bin")
+        File.binwrite(packet_file, pkt_data[:payload]) if pkt_data[:payload]
       end
 
       # Save analysis data as JSON (including discard reason)
@@ -1805,6 +1050,9 @@ module Streamripper
           elsif current_nal && fragment_data
             # Continuation of fragmented NAL unit
             current_nal += fragment_data
+          elsif !current_nal && start_bit == 0
+            # Orphaned fragment (continuation without start) - skip it
+            next
           end
 
           if end_bit == 1 && current_nal

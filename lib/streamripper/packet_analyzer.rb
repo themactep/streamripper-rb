@@ -88,9 +88,9 @@ module Streamripper
     def initialize
       @packet_count = 0
       @last_timestamp = nil
-      @last_unique_timestamp = nil
-      @timestamp_deviations = []
-      @expected_timestamp_increment = nil
+      @baseline_rtp_timestamp = nil
+      @baseline_wallclock_us = nil
+      @rtp_clock_hz = 90000  # H.264 uses 90kHz clock
       @last_payload_type = nil
       @last_fragment_timestamp = nil
       @fragment_counter = 0
@@ -130,9 +130,18 @@ module Streamripper
         display_frame_type = frame_type
       end
 
+      wallclock_time_us = (packet[:wallclock_time] * 1_000_000).to_i
+
+      # Extract NAL unit type for baseline detection
+      nal_unit_type = nil
+      if packet[:payload] && packet[:payload].length > 0
+        first_byte = packet[:payload][0].ord
+        nal_unit_type = first_byte & 0x1F
+      end
+
       analysis = {
         packet_number: @packet_count,
-        wallclock_time_us: (packet[:wallclock_time] * 1_000_000).to_i,
+        wallclock_time_us: wallclock_time_us,
         packet_type: payload_type_name,
         frame_type: display_frame_type,
         payload_type_code: packet[:payload_type],
@@ -142,7 +151,7 @@ module Streamripper
         sequence_number: packet[:sequence_number],
         marker_bit: packet[:marker],
         ssrc: packet[:ssrc],
-        timestamp_deviation_us: calculate_timestamp_deviation(packet[:timestamp])
+        timestamp_deviation_us: calculate_timestamp_deviation(packet[:timestamp], wallclock_time_us, nal_unit_type)
       }
 
       # Store packet data for extraction
@@ -170,33 +179,46 @@ module Streamripper
       size
     end
 
-    def calculate_timestamp_deviation(timestamp)
+    def calculate_timestamp_deviation(timestamp, wallclock_us, nal_unit_type = nil)
       # If timestamp hasn't changed (same frame, fragmented packets), deviation is 0
       if @last_timestamp == timestamp
         return 0
       end
 
-      if @last_unique_timestamp.nil?
-        @last_unique_timestamp = timestamp
-        @last_timestamp = timestamp
-        return 0
+      # Establish baseline on first SPS packet (start of valid stream)
+      if @baseline_rtp_timestamp.nil?
+        # Only set baseline when we see an SPS (NAL type 7)
+        if nal_unit_type == 7
+          @baseline_rtp_timestamp = timestamp
+          @baseline_wallclock_us = wallclock_us
+          @last_timestamp = timestamp
+          return 0
+        else
+          # Before first SPS, return 0 deviation (no baseline yet)
+          @last_timestamp = timestamp
+          return 0
+        end
       end
 
-      # Calculate the difference from last unique timestamp (frame boundary)
-      diff = timestamp - @last_unique_timestamp
+      # Calculate expected wallclock time based on RTP timestamp
+      # RTP time elapsed since baseline
+      rtp_time_elapsed = timestamp - @baseline_rtp_timestamp
 
-      # Initialize expected increment on first frame change
-      if @expected_timestamp_increment.nil?
-        @expected_timestamp_increment = diff
-        deviation = 0
-      else
-        # Calculate deviation from expected increment
-        deviation = diff - @expected_timestamp_increment
+      # Handle 32-bit RTP timestamp wraparound
+      if rtp_time_elapsed < -2147483648  # Less than -2^31, likely a wraparound
+        rtp_time_elapsed = rtp_time_elapsed + 4294967296  # Add 2^32 to unwrap
       end
 
-      @last_unique_timestamp = timestamp
+      # Convert RTP time to microseconds
+      rtp_time_us = (rtp_time_elapsed * 1_000_000) / @rtp_clock_hz
+
+      # Expected wallclock time if stream was perfectly synchronized
+      expected_wallclock_us = @baseline_wallclock_us + rtp_time_us
+
+      # Actual deviation: difference between expected and actual wallclock
+      deviation = wallclock_us - expected_wallclock_us
+
       @last_timestamp = timestamp
-      @timestamp_deviations << deviation
 
       deviation
     end
@@ -303,8 +325,6 @@ module Streamripper
       if start_bit == 1
         @last_fragment_timestamp = rtp_timestamp
         return get_h264_nal_description(nal_type)
-      elsif end_bit == 1
-        return "#{get_h264_nal_description(nal_type)}-End"
       else
         return 'Fragment'
       end
@@ -321,8 +341,6 @@ module Streamripper
       if start_bit == 1
         @last_fragment_timestamp = rtp_timestamp
         return get_h264_nal_description(nal_type)
-      elsif end_bit == 1
-        return "#{get_h264_nal_description(nal_type)}-End"
       else
         return 'Fragment'
       end

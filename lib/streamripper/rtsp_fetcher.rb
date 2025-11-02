@@ -129,6 +129,7 @@ module Streamripper
           extension_data: ext_data,
           payload: payload,
           raw_header: header,
+          raw_packet: rtp_packet,  # Complete RTP packet data
           rtsp_channel: channel_num,  # Include RTSP channel for raw file
           wallclock_time: Time.now.to_f # seconds with microsecond precision
         }

@@ -4,6 +4,7 @@ require_relative 'output_manager'
 require_relative 'report_generator'
 require_relative 'packet_extractor'
 require_relative 'web_server'
+require_relative 'raw_stream_reparser'
 
 module Streamripper
   class CLI < Thor
@@ -16,6 +17,20 @@ module Streamripper
            desc: 'Enable verbose logging'
     option :max_packets, aliases: '-m', type: :numeric, default: 0,
            desc: 'Maximum number of packets to capture (0 = infinite)'
+
+    desc 'reparse SCAN_DIR', 'Re-parse raw_stream.bin with new filtering'
+    def reparse(scan_dir)
+      setup_logging
+
+      puts "Streamripper v#{Streamripper::VERSION}"
+      puts "=" * 60
+      puts "Re-parsing Raw Stream"
+      puts "=" * 60
+      puts ""
+
+      reparser = RawStreamReparser.new(scan_dir)
+      reparser.reparse
+    end
 
     desc 'web [OPTIONS]', 'Start web UI server'
     option :port, aliases: '-p', type: :numeric, default: 8080,
@@ -94,6 +109,8 @@ module Streamripper
       # Generate output filenames
       analysis_file = output_mgr.get_output_path("analysis.#{options[:format] == 'both' ? 'json' : options[:format]}")
       raw_stream_file = output_mgr.get_output_path("raw_stream.bin")
+      packets_dir = File.join(output_mgr.run_dir, 'packets')
+      FileUtils.mkdir_p(packets_dir)
 
       logger = PacketLogger.new(analysis_file, options[:format].to_sym)
       saver = StreamSaver.new(raw_stream_file)
@@ -139,6 +156,10 @@ module Streamripper
 
           packet_count += 1
 
+          # Save individual packet binary file (numbered from 1)
+          packet_file = File.join(packets_dir, "packet#{packet_count.to_s.rjust(6, '0')}.bin")
+          File.binwrite(packet_file, packet[:raw_packet])
+
           # Print progress every 100 packets
           if packet_count % 100 == 0
             elapsed = Time.now - start_time
@@ -151,6 +172,7 @@ module Streamripper
         fetcher.close
         logger.close
         saver.close
+        puts "Saved #{packet_count} individual packets to packets/ directory"
       end
 
       # Extract unknown/interesting packets and frames

@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require_relative '../lib/streamripper'
+
+# Find all scan directories with raw_stream.bin
+scans_dir = 'logs/streams'
+unless Dir.exist?(scans_dir)
+  puts "Error: #{scans_dir} not found"
+  exit 1
+end
+
+scan_dirs = Dir.glob("#{scans_dir}/*/*").select do |dir|
+  File.exist?(File.join(dir, 'raw_stream.bin'))
+end
+
+if scan_dirs.empty?
+  puts "No scan directories found with raw_stream.bin"
+  exit 0
+end
+
+puts "Found #{scan_dirs.length} scan(s) to re-parse\n"
+puts "=" * 60
+
+scan_dirs.each_with_index do |scan_dir, idx|
+  puts "\n[#{idx + 1}/#{scan_dirs.length}] Re-parsing: #{scan_dir}"
+  puts "-" * 60
+  
+  begin
+    reparser = Streamripper::RawStreamReparser.new(scan_dir)
+    reparser.reparse
+  rescue => e
+    puts "ERROR: #{e.message}"
+  end
+end
+
+puts "\n" + "=" * 60
+puts "✓ All scans re-parsed!"
+

@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamRipper - RTSP Stream Analyzer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <style>
+    body {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .main-container {
+      max-width: 1400px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      overflow: hidden;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 40px;
+      text-align: center;
+    }
+
+    .header h1 {
+      font-size: 2.5em;
+      margin-bottom: 10px;
+    }
+
+    .header a {
+      color: white;
+      text-decoration: none;
+      transition: opacity 0.3s;
+    }
+
+    .header a:hover {
+      opacity: 0.8;
+    }
+
+    .content {
+      padding: 40px;
+    }
+
+    .input-section {
+      background: #f5f5f5;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+    }
+
+    .scan-title {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+      position: relative;
+    }
+
+    .scan-thumbnail {
+      width: 150px;
+      height: 100px;
+      object-fit: cover;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 3px solid rgba(255,255,255,0.3);
+      transition: border-color 0.2s;
+    }
+
+    .scan-thumbnail:hover {
+      border-color: rgba(255,255,255,0.6);
+    }
+
+    .scan-controls {
+      position: absolute;
+      top: 30px;
+      right: 30px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      width: 200px;
+      justify-content: flex-end;
+    }
+
+    .reparse-btn {
+      background: rgba(255,255,255,0.2);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.5);
+      padding: 10px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    .reparse-btn:hover {
+      background: rgba(255,255,255,0.3);
+      color: white;
+    }
+
+    .reparse-status {
+      color: #fff;
+      font-weight: bold;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-bottom: 30px;
+    }
+
+    .stat-card {
+    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    padding: 20px;
+    border-radius: 8px;
+    border-left: 4px solid #667eea;
+    }
+
+    .stat-card h3 {
+    color: #667eea;
+    font-size: 0.9em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    }
+
+    .stat-card .value {
+    font-size: 2em;
+    font-weight: bold;
+    color: #333;
+    }
+
+    .frames-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+    }
+
+    .frames-table th {
+    background: #667eea;
+    color: white;
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+    }
+
+    .frames-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #eee;
+    }
+
+    .frames-table tr:hover {
+    background: #f5f5f5;
+    cursor: pointer;
+    }
+
+    .frame-type {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-weight: 600;
+    color: white;
+    }
+
+    .frame-type.i-frame { background: #1b5e20; }
+    .frame-type.p-frame { background: #81c784; }
+    .frame-type.fragment { background: #9c27b0; }
+    .frame-type.sps { background: #ffd93d; color: #333; }
+    .frame-type.pps { background: #ffd93d; color: #333; }
+    .frame-type.audio { background: #1976d2; }
+    .frame-type.unknown { background: #d32f2f; }
+
+    .loading {
+    display: none;
+    text-align: center;
+    padding: 20px;
+    }
+
+    .spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #667eea;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto;
+    }
+
+    @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+    }
+
+    .modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    }
+
+    .modal.active {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    }
+
+    .modal-content {
+    background-color: white;
+    border-radius: 8px;
+    width: 90%;
+    max-width: 1200px;
+    height: 90vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+    }
+
+    .capture-modal {
+    display: none;
+    position: fixed;
+    z-index: 2000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    justify-content: center;
+    align-items: center;
+    }
+
+    .capture-modal.active {
+    display: flex;
+    }
+
+    .capture-modal-content {
+    background: white;
+    padding: 40px;
+    border-radius: 12px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    min-width: 300px;
+    }
+
+    .capture-modal-spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #667eea;
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 20px;
+    }
+
+    .capture-modal-text {
+    font-size: 1.2em;
+    color: #333;
+    margin-bottom: 15px;
+    font-weight: 500;
+    }
+
+    .capture-modal-countdown {
+    font-size: 2.5em;
+    color: #667eea;
+    font-weight: bold;
+    font-family: 'Courier New', monospace;
+    margin: 20px 0;
+    }
+
+    .capture-modal-subtext {
+    font-size: 0.9em;
+    color: #666;
+    margin-top: 15px;
+    }
+
+    .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 2px solid #667eea;
+    flex-shrink: 0;
+    }
+
+    .modal-header h2 {
+    margin: 0;
+    color: #333;
+    flex: 1;
+    }
+
+    .modal-header-buttons {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    }
+
+    .download-btn {
+    background: #667eea;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: background 0.2s;
+    }
+
+    .download-btn:hover:not(:disabled) {
+    background: #764ba2;
+    }
+
+    .download-btn:disabled {
+    background: #999;
+    cursor: not-allowed;
+    opacity: 0.7;
+    }
+
+    .modal-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    padding: 20px;
+    gap: 15px;
+    }
+
+    .close-btn {
+    background: none;
+    border: none;
+    font-size: 28px;
+    color: #667eea;
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    }
+
+    body.modal-open {
+    overflow: hidden;
+    }
+
+    .hex-dump {
+    background: #1e1e1e;
+    color: #00ff00;
+    font-family: 'Courier New', monospace;
+    font-size: 15px;
+    padding: 15px;
+    border-radius: 4px;
+    overflow-x: auto;
+    line-height: 1.6;
+    white-space: pre;
+    }
+
+    .error {
+    background: #ff6b6b;
+    color: white;
+    padding: 15px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    display: none;
+    }
+
+    #previousScans {
+    background: #f5f5f5;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    }
+
+    #previousScans h3 {
+    margin-top: 0;
+    color: #333;
+    font-size: 1.1em;
+    }
+
+    .scans-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 15px;
+    }
+
+    .scan-card {
+    background: white;
+    padding: 15px;
+    border-radius: 4px;
+    border-left: 4px solid #667eea;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .scan-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    }
+
+    .scan-card-time {
+    font-weight: bold;
+    color: #667eea;
+    font-size: 0.9em;
+    }
+
+    .scan-card-host {
+    color: #666;
+    font-size: 0.85em;
+    margin-top: 5px;
+    }
+
+    .scan-card-stats {
+    color: #999;
+    font-size: 0.8em;
+    margin-top: 8px;
+    }
+
+    .scan-card-links {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+    }
+
+    .scan-link {
+    flex: 1;
+    padding: 6px 10px;
+    background: #667eea;
+    color: white;
+    text-decoration: none;
+    border-radius: 3px;
+    font-size: 0.8em;
+    text-align: center;
+    transition: background 0.2s;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    }
+
+    .scan-link:hover {
+    background: #764ba2;
+    }
+    </style>
+  </head>
+  <body>
+    <div class="main-container">
+      <div class="header">
+        <h1><a href="/">🎬 StreamRipper</a></h1>
+        <p>Real-time RTSP Stream Analysis & Forensics</p>
+      </div>
+
+      <div class="content">
+        <div id="errorMsg" class="alert alert-danger d-none" role="alert"></div>
+
+        <div class="input-section">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <input type="text" id="rtspUrl" class="form-control" placeholder="RTSP URL (e.g., rtsp://user:pass@host/ch0)" value="rtsp://thingino:thingino@192.168.88.31/ch0">
+            </div>
+            <div class="col-md-3">
+              <input type="number" id="duration" class="form-control" placeholder="Duration (seconds)" value="5" min="1" max="300">
+            </div>
+            <div class="col-md-3">
+              <button onclick="startCapture()" class="btn btn-primary w-100">Start Capture</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="capture-modal" id="captureModal">
+          <div class="capture-modal-content">
+            <div class="capture-modal-spinner"></div>
+            <div class="capture-modal-text">Capturing Stream...</div>
+            <div class="capture-modal-countdown" id="countdownDisplay">0:00</div>
+            <div class="capture-modal-subtext">Please wait while the stream is being captured and analyzed</div>
+          </div>
+        </div>
+
+        <div id="results" class="d-none">
+          <div id="scanTitle" class="scan-title d-flex gap-4 align-items-start">
+            <div class="flex-shrink-0">
+              <img id="scanThumbnail" src="" class="scan-thumbnail" onclick="openVideoModal()" title="Click to play video">
+            </div>
+            <div class="flex-grow-1">
+              <h2 class="mb-3 fs-3">Scan Results</h2>
+              <div class="row g-3 fs-6">
+                <div class="col-md-6 col-lg-3">
+                  <div class="text-white-50 mb-2 small">Stream</div>
+                  <div class="fw-bold fs-5" id="scanStream">-</div>
+                </div>
+                <div class="col-md-6 col-lg-3">
+                  <div class="text-white-50 mb-2 small">Endpoint</div>
+                  <div class="fw-bold fs-5" id="scanEndpoint">-</div>
+                </div>
+                <div class="col-md-6 col-lg-3">
+                  <div class="text-white-50 mb-2 small">Scan Time</div>
+                  <div class="fw-bold fs-5" id="scanTime">-</div>
+                </div>
+                <div class="col-md-6 col-lg-3">
+                  <div class="text-white-50 mb-2 small">Scan ID</div>
+                  <div class="fw-bold fs-5 font-monospace" id="scanId">-</div>
+                </div>
+              </div>
+            </div>
+            <div class="scan-controls">
+              <span id="reparseStatus" class="reparse-status d-none"></span>
+              <button onclick="reparseData()" class="reparse-btn">🔄 Reparse</button>
+            </div>
+          </div>
+
+          <div class="row g-3 mb-4">
+            <div class="col-md-6 col-lg-3">
+              <div class="card">
+                <div class="card-body">
+                  <h5 class="card-title">Total Frames</h5>
+                  <div class="fs-3 fw-bold text-primary" id="frameCount">0</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6 col-lg-3">
+              <div class="card">
+                <div class="card-body">
+                  <h5 class="card-title">Total Packets</h5>
+                  <div class="fs-3 fw-bold text-primary" id="packetCount">0</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6 col-lg-3">
+              <div class="card">
+                <div class="card-body">
+                  <h5 class="card-title">Duration</h5>
+                  <div class="fs-3 fw-bold text-primary" id="captureDuration">0s</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6 col-lg-3">
+              <div class="card">
+                <div class="card-body">
+                  <h5 class="card-title">Frame Rate</h5>
+                  <div class="fs-3 fw-bold text-primary" id="frameRate">0 fps</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <h2 class="mt-5 mb-4">Analysis Charts</h2>
+          <div class="row g-4 mb-5">
+            <div class="col-lg-6">
+              <div class="card">
+                <div class="card-body">
+                  <h5 class="card-title">Time Deviation (µs)</h5>
+                  <canvas id="deviationChart"></canvas>
+                </div>
+              </div>
+            </div>
+            <div class="col-lg-6">
+              <div class="card">
+                <div class="card-body">
+                  <h5 class="card-title">Packet Sizes (bytes)</h5>
+                  <canvas id="packetSizeChart"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <h2 class="mt-5 mb-3">Frame Summary</h2>
+          <div class="table-responsive">
+            <table class="table table-striped table-hover">
+            <thead>
+              <tr>
+                <th>Frame #</th>
+                <th>Packet Range</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>RTP TS</th>
+                <th>Deviation</th>
+              </tr>
+            </thead>
+            <tbody id="framesBody"></tbody>
+            </table>
+          </div>
+
+        </div>
+
+        <div id="previousScans" class="d-none mt-5 pt-5 border-top">
+          <h2 class="mb-4">Previous Scans</h2>
+          <div id="scansList" class="row g-3"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hex Modal -->
+    <div id="hexModal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modalTitle">Frame Hex Dump</h2>
+          <div class="modal-header-buttons">
+            <button class="download-btn" id="downloadFrameBtn" onclick="downloadFrame()" title="Download frame binary">⬇️ Download</button>
+            <button class="close-btn" onclick="closeHexModal()" title="Close (ESC)">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body">
+          <div class="hex-dump" id="hexContent"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Video Modal -->
+    <div id="videoModal" class="modal">
+      <div class="modal-content" style="max-width: 90%; width: 1200px;">
+        <div class="modal-header">
+          <h2>Video Playback</h2>
+          <button class="close-btn" onclick="closeVideoModal()" title="Close (ESC)">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 20px;">
+          <video id="streamVideo" width="100%" height="auto" controls style="border-radius: 4px; background: #000;">
+            <source id="videoSource" src="" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    let captureData = null;
+    let currentFrame = null;
+    let downloadInProgress = false;
+    let countdownInterval = null;
+    let deviationChart = null;
+    let packetSizeChart = null;
+
+    async function startCapture() {
+    const rtspUrl = document.getElementById('rtspUrl').value;
+    const duration = parseInt(document.getElementById('duration').value);
+
+    if (!rtspUrl) {
+    showError('Please enter an RTSP URL');
+    return;
+    }
+
+    // Show capture modal
+    const captureModal = document.getElementById('captureModal');
+    captureModal.classList.add('active');
+    document.getElementById('results').style.display = 'none';
+    document.getElementById('errorMsg').style.display = 'none';
+
+    // Preset the countdown display with initial value
+    const countdownDisplay = document.getElementById('countdownDisplay');
+    const minutes = Math.floor(duration / 60);
+    const seconds = duration % 60;
+    countdownDisplay.textContent = minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
+
+    // Start countdown
+      let remainingTime = duration;
+
+      countdownInterval = setInterval(() => {
+        remainingTime--;
+
+        // Ensure remainingTime doesn't go below 0
+        if (remainingTime < 0) {
+          remainingTime = 0;
+        }
+
+        const minutes = Math.floor(remainingTime / 60);
+        const seconds = remainingTime % 60;
+        countdownDisplay.textContent = minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
+
+        if (remainingTime <= 0) {
+          clearInterval(countdownInterval);
+          countdownInterval = null;
+        }
+      }, 1000);
+
+      try {
+        const response = await fetch('/api/capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rtsp_url: rtspUrl, duration: duration })
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Capture failed');
+        }
+
+        captureData = await response.json();
+
+        // Extract host and scan_id from the capture response
+        if (captureData.host && captureData.scan_id) {
+          // Update URL to the new scan
+          const newUrl = '?host=' + encodeURIComponent(captureData.host) +
+            '&scan_id=' + encodeURIComponent(captureData.scan_id);
+          window.history.pushState({ host: captureData.host, scan_id: captureData.scan_id }, '', newUrl);
+        }
+
+        displayResults(captureData);
+      } catch (error) {
+        showError(error.message);
+      } finally {
+        // Clear countdown interval
+        if (countdownInterval) {
+          clearInterval(countdownInterval);
+          countdownInterval = null;
+        }
+
+        // Hide capture modal
+        const captureModal = document.getElementById('captureModal');
+        captureModal.classList.remove('active');
+        document.getElementById('results').style.display = 'block';
+      }
+    }
+
+    function displayResults(data) {
+      // Populate scan title
+      const scanIdParts = data.scan_id.split('_');
+      const scanDate = scanIdParts[0];
+      const scanTime = scanIdParts[1];
+      const formattedDate = scanDate.substring(0, 4) + '-' + scanDate.substring(4, 6) + '-' + scanDate.substring(6, 8);
+      const formattedTime = scanTime.substring(0, 2) + ':' + scanTime.substring(2, 4) + ':' + scanTime.substring(4, 6);
+
+      // Extract IP and endpoint from host
+      const hostParts = data.host.split('_');
+      const ip = hostParts.slice(0, 4).join('.');
+      const endpoint = '/' + hostParts.slice(4).join('/');
+
+      document.getElementById('scanStream').textContent = ip;
+      document.getElementById('scanEndpoint').textContent = endpoint;
+      document.getElementById('scanTime').textContent = formattedDate + ' ' + formattedTime;
+      document.getElementById('scanId').textContent = data.scan_id;
+
+      // Set thumbnail
+      const thumbnailUrl = '/thumbnails/' + encodeURIComponent(data.host) + '/' + encodeURIComponent(data.scan_id) + '/thumbnail.jpg';
+      const thumbnail = document.getElementById('scanThumbnail');
+      thumbnail.src = thumbnailUrl;
+      thumbnail.onerror = () => {
+        thumbnail.classList.add('d-none');
+      };
+
+      document.getElementById('frameCount').textContent = data.frame_count;
+      document.getElementById('packetCount').textContent = data.packet_count;
+      document.getElementById('captureDuration').textContent = data.duration + 's';
+      document.getElementById('frameRate').textContent = (data.frame_count / data.duration).toFixed(2) + ' fps';
+
+      const tbody = document.getElementById('framesBody');
+      tbody.innerHTML = '';
+
+      data.frames.forEach(frame => {
+        const row = document.createElement('tr');
+        const typeClass = frame.frame_type.toLowerCase().replace('-', '-');
+        const packetRange = frame.first_packet > 0 ? `${frame.first_packet}-${frame.last_packet}` : '-';
+        row.innerHTML = `
+<td>${frame.frame_number}</td>
+<td>${packetRange}</td>
+<td><span class="frame-type ${typeClass}">${frame.frame_type}</span></td>
+<td>${frame.total_size} bytes</td>
+<td>${frame.rtp_timestamp}</td>
+<td>${frame.deviation} µs</td>
+`;
+        row.onclick = () => showHexDump(frame);
+        tbody.appendChild(row);
+      });
+
+      // Render charts
+      renderDeviationChart(data.frames);
+      renderPacketSizeChart(data.frames);
+
+      // Load video if available
+      if (data.host && data.scan_id) {
+        loadVideo(data.host, data.scan_id);
+      }
+
+      document.getElementById('results').classList.remove('d-none');
+      showPreviousScansSection();
+
+      // Scroll to scan title
+      document.getElementById('scanTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function loadVideo(host, scanId) {
+      const videoSource = document.getElementById('videoSource');
+      const videoElement = document.getElementById('streamVideo');
+
+      if (!videoSource || !videoElement) {
+        console.error('Video elements not found');
+        return;
+      }
+
+      const mp4Url = '/logs/streams/' + encodeURIComponent(host) + '/' + encodeURIComponent(scanId) + '/stream.mp4';
+
+      console.log('Loading video from:', mp4Url);
+      videoSource.src = mp4Url;
+      videoElement.load();
+    }
+
+    function renderDeviationChart(frames) {
+      // Destroy existing chart if it exists
+      if (deviationChart) {
+        deviationChart.destroy();
+        deviationChart = null;
+      }
+
+      const ctx = document.getElementById('deviationChart').getContext('2d');
+
+      const labels = frames.map(f => 'Frame ' + f.frame_number);
+      const deviations = frames.map(f => f.deviation);
+
+      // Determine color based on deviation value
+      const colors = deviations.map(d => {
+        if (d === 0) return '#4CAF50'; // Green for 0
+        if (d > 0) return '#FF9800'; // Orange for positive
+        return '#F44336'; // Red for negative
+      });
+
+      deviationChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Time Deviation (µs)',
+            data: deviations,
+            backgroundColor: colors,
+            borderColor: colors,
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: {
+            legend: {
+              display: true,
+              position: 'top'
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'Deviation (µs)'
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderPacketSizeChart(frames) {
+      // Destroy existing chart if it exists
+      if (packetSizeChart) {
+        packetSizeChart.destroy();
+        packetSizeChart = null;
+      }
+
+      const ctx = document.getElementById('packetSizeChart').getContext('2d');
+
+      const labels = frames.map(f => 'Frame ' + f.frame_number);
+      const sizes = frames.map(f => f.total_size);
+
+      packetSizeChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Packet Size (bytes)',
+            data: sizes,
+            borderColor: '#667eea',
+            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.4,
+            pointBackgroundColor: '#667eea',
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+            pointRadius: 4,
+            pointHoverRadius: 6
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: {
+            legend: {
+              display: true,
+              position: 'top'
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'Size (bytes)'
+              }
+            }
+          }
+        }
+      });
+    }
+
+    async function showHexDump(frame) {
+      try {
+        // Store current frame for download
+        currentFrame = frame;
+
+        const response = await fetch('/api/frame-hex?frame=' + encodeURIComponent(frame.payload));
+        const data = await response.json();
+        document.getElementById('hexContent').textContent = data.hex;
+
+        // Update modal header with frame info
+        const modalTitle = document.getElementById('modalTitle');
+        if (modalTitle) {
+          modalTitle.textContent = 'Frame ' + frame.frame_number + ' - ' + frame.frame_type + ' (' + frame.total_size + ' bytes)';
+        }
+
+        const modal = document.getElementById('hexModal');
+        modal.classList.add('active');
+        document.body.classList.add('modal-open');
+      } catch (error) {
+        showError('Failed to load hex dump: ' + error.message);
+      }
+    }
+
+    function downloadFrame() {
+      // Prevent double downloads with debounce
+      if (downloadInProgress) {
+        return;
+      }
+
+      if (!currentFrame) {
+        showError('No frame selected');
+        return;
+      }
+
+      try {
+        // Set download in progress flag
+        downloadInProgress = true;
+        const downloadBtn = document.getElementById('downloadFrameBtn');
+        const originalText = downloadBtn.textContent;
+        downloadBtn.textContent = '⏳ Downloading...';
+        downloadBtn.disabled = true;
+
+        // Decode base64 payload to binary
+        const binaryString = atob(currentFrame.payload);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        // Create blob and download
+        const blob = new Blob([bytes], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'frame_' + currentFrame.frame_number.toString().padStart(5, '0') + '_' + currentFrame.frame_type.toLowerCase() + '.bin';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        // Reset button after download completes
+        setTimeout(() => {
+          downloadBtn.textContent = originalText;
+          downloadBtn.disabled = false;
+          downloadInProgress = false;
+        }, 1000);
+      } catch (error) {
+        showError('Failed to download frame: ' + error.message);
+        // Reset on error
+        downloadInProgress = false;
+        const downloadBtn = document.getElementById('downloadFrameBtn');
+        downloadBtn.textContent = '⬇️ Download';
+        downloadBtn.disabled = false;
+      }
+    }
+
+    function closeHexModal() {
+      const modal = document.getElementById('hexModal');
+      modal.classList.remove('active');
+      document.body.classList.remove('modal-open');
+    }
+
+    function openVideoModal() {
+      const modal = document.getElementById('videoModal');
+      modal.classList.add('active');
+      document.body.classList.add('modal-open');
+    }
+
+    function closeVideoModal() {
+      const modal = document.getElementById('videoModal');
+      modal.classList.remove('active');
+      document.body.classList.remove('modal-open');
+    }
+
+    function showError(message) {
+      const errorDiv = document.getElementById('errorMsg');
+      errorDiv.textContent = message;
+      errorDiv.classList.remove('d-none');
+    }
+
+    // Close modal when clicking outside (on the backdrop)
+    document.addEventListener('click', function(event) {
+      const hexModal = document.getElementById('hexModal');
+      const videoModal = document.getElementById('videoModal');
+      if (event.target === hexModal) {
+        closeHexModal();
+      }
+      if (event.target === videoModal) {
+        closeVideoModal();
+      }
+    });
+
+    // Close modal on ESC key
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape') {
+        const hexModal = document.getElementById('hexModal');
+        const videoModal = document.getElementById('videoModal');
+        if (hexModal.classList.contains('active')) {
+          closeHexModal();
+        }
+        if (videoModal.classList.contains('active')) {
+          closeVideoModal();
+        }
+      }
+    });
+
+    // Load previous scans on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      loadPreviousScans();
+
+      // Check if URL has scan parameters
+      const params = new URLSearchParams(window.location.search);
+      const host = params.get('host');
+      const scanId = params.get('scan_id');
+
+      if (host && scanId) {
+        // Load the scan from URL parameters
+        loadScanData(host, scanId);
+      }
+    });
+
+    async function loadPreviousScans() {
+      try {
+        const response = await fetch('/api/list-scans');
+        const data = await response.json();
+
+        if (data.scans && data.scans.length > 0) {
+          displayPreviousScans(data.scans);
+        }
+      } catch (error) {
+        console.error('Failed to load previous scans:', error);
+      }
+    }
+
+    function displayPreviousScans(scans) {
+      const scansList = document.getElementById('scansList');
+      const previousScans = document.getElementById('previousScans');
+
+      scansList.innerHTML = '';
+
+      scans.forEach(scan => {
+        const thumbnail = scan.has_thumbnail
+          ? `<img src="${scan.thumbnail_url}" class="card-img-top" style="height: 120px; object-fit: cover;">`
+          : `<div class="card-img-top bg-dark d-flex align-items-center justify-content-center" style="height: 120px; color: #999;">No thumbnail</div>`;
+
+        const col = document.createElement('div');
+        col.className = 'col-sm-6 col-md-4 col-lg-3';
+        col.innerHTML = `
+          <div class="card h-100 cursor-pointer" style="cursor: pointer; transition: transform 0.2s;">
+            ${thumbnail}
+            <div class="card-body">
+              <h6 class="card-title text-truncate">${scan.scan_id}</h6>
+              <p class="card-text small text-muted">
+                ${scan.packet_count} packets | ${scan.frame_count} frames<br>
+                ${scan.duration}s
+              </p>
+            </div>
+          </div>
+        `;
+
+        const card = col.querySelector('.card');
+        card.addEventListener('mouseover', () => card.style.transform = 'scale(1.05)');
+        card.addEventListener('mouseout', () => card.style.transform = 'scale(1)');
+        card.addEventListener('click', () => {
+          loadScanData(scan.host, scan.scan_id);
+        });
+
+        scansList.appendChild(col);
+      });
+
+      // Show previous scans section
+      previousScans.classList.remove('d-none');
+    }
+
+    // Show previous scans after results are displayed
+    function showPreviousScansSection() {
+      const previousScans = document.getElementById('previousScans');
+      previousScans.classList.remove('d-none');
+    }
+
+    async function loadScanData(host, scanId) {
+      try {
+        document.getElementById('results').classList.add('d-none');
+        document.getElementById('errorMsg').classList.add('d-none');
+
+        const response = await fetch('/api/load-scan?host=' + encodeURIComponent(host) + '&scan_id=' + encodeURIComponent(scanId));
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to load scan');
+        }
+
+        const data = await response.json();
+        displayResults(data);
+
+        // Update URL to include scan identifier
+        const newUrl = '?host=' + encodeURIComponent(host) + '&scan_id=' + encodeURIComponent(scanId);
+        window.history.pushState({ host: host, scan_id: scanId }, '', newUrl);
+      } catch (error) {
+        showError('Failed to load scan: ' + error.message);
+      }
+    }
+
+    async function reparseData() {
+      const params = new URLSearchParams(window.location.search);
+      const host = params.get('host');
+      const scanId = params.get('scan_id');
+
+      if (!host || !scanId) {
+        showError('No scan loaded. Please load a scan first.');
+        return;
+      }
+
+      try {
+        const statusEl = document.getElementById('reparseStatus');
+        statusEl.textContent = 'Reparsing...';
+        statusEl.style.display = 'inline';
+
+        const response = await fetch('/api/reparse?host=' + encodeURIComponent(host) + '&scan_id=' + encodeURIComponent(scanId), {
+          method: 'POST'
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to reparse');
+        }
+
+        const result = await response.json();
+        statusEl.textContent = 'Reparse complete! Reloading...';
+
+        // Reload the scan data
+        setTimeout(() => {
+          loadScanData(host, scanId);
+          // Clear status message after reload
+          setTimeout(() => {
+            statusEl.style.display = 'none';
+          }, 500);
+        }, 1000);
+      } catch (error) {
+        showError('Failed to reparse: ' + error.message);
+        document.getElementById('reparseStatus').style.display = 'none';
+      }
+    }
+
+    async function loadScansGallery() {
+      try {
+        const response = await fetch('/api/list-scans');
+        if (!response.ok) throw new Error('Failed to load scans');
+
+        const data = await response.json();
+        const scans = data.scans || [];
+
+        if (scans.length === 0) return;
+
+        const scansList = document.getElementById('scansList');
+        scansList.innerHTML = '';
+
+        scans.forEach(scan => {
+          const scanCard = document.createElement('div');
+          scanCard.style.cssText = 'border: 1px solid #ddd; border-radius: 8px; overflow: hidden; cursor: pointer; transition: transform 0.2s; background: #f5f5f5;';
+          scanCard.onmouseover = () => scanCard.style.transform = 'scale(1.05)';
+          scanCard.onmouseout = () => scanCard.style.transform = 'scale(1)';
+
+          const thumbnail = scan.has_thumbnail
+            ? `<img src="${scan.thumbnail_url}" style="width: 100%; height: 120px; object-fit: cover;">`
+            : `<div style="width: 100%; height: 120px; background: #333; display: flex; align-items: center; justify-content: center; color: #999;">No thumbnail</div>`;
+
+          scanCard.innerHTML = `
+            ${thumbnail}
+            <div style="padding: 10px;">
+              <div style="font-weight: bold; font-size: 12px; color: #333;">${scan.scan_id}</div>
+              <div style="font-size: 11px; color: #666;">
+                ${scan.packet_count} packets | ${scan.frame_count} frames<br>
+                ${scan.duration}s
+              </div>
+            </div>
+          `;
+
+          scanCard.onclick = () => {
+            loadScanData(scan.host, scan.scan_id);
+          };
+
+          scansList.appendChild(scanCard);
+        });
+
+        document.getElementById('scansGallery').style.display = 'block';
+      } catch (error) {
+        console.error('Failed to load scans gallery:', error);
+      }
+    }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>
