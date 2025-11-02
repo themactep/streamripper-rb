@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>StreamRipper - RTSP Stream Analyzer</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
     <style>
     body {
@@ -484,7 +485,12 @@
           <div class="modal-header">
             <h1 class="modal-title fs-5" id="modalTitle">Frame Hex Dump</h1>
             <div class="d-flex gap-2 align-items-center">
-              <button class="btn btn-primary btn-sm" id="downloadFrameBtn" onclick="downloadFrame()" title="Download frame binary">⬇️ Download</button>
+              <button type="button" class="btn btn-link p-0 text-decoration-none" id="copyHexBtn" onclick="copyHexToClipboard()" title="Copy hex to clipboard" aria-label="Copy">
+                <i class="bi bi-clipboard"></i>
+              </button>
+              <button type="button" class="btn btn-link p-0 text-decoration-none" id="downloadFrameBtn" onclick="downloadFrame()" title="Download frame binary" aria-label="Download">
+                <i class="bi bi-download"></i>
+              </button>
               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
           </div>
@@ -814,6 +820,33 @@
       }
     }
 
+    function copyHexToClipboard() {
+      const hexContent = document.getElementById('hexContent');
+      if (!hexContent || !hexContent.textContent) {
+        showError('No hex content to copy');
+        return;
+      }
+
+      try {
+        navigator.clipboard.writeText(hexContent.textContent).then(() => {
+          // Show feedback
+          const copyBtn = document.getElementById('copyHexBtn');
+          const originalHTML = copyBtn.innerHTML;
+          copyBtn.innerHTML = '<i class="bi bi-check-circle"></i>';
+          copyBtn.classList.add('text-success');
+
+          setTimeout(() => {
+            copyBtn.innerHTML = originalHTML;
+            copyBtn.classList.remove('text-success');
+          }, 2000);
+        }).catch(err => {
+          showError('Failed to copy to clipboard: ' + err.message);
+        });
+      } catch (error) {
+        showError('Failed to copy: ' + error.message);
+      }
+    }
+
     function downloadFrame() {
       // Prevent double downloads with debounce
       if (downloadInProgress) {
@@ -829,8 +862,8 @@
         // Set download in progress flag
         downloadInProgress = true;
         const downloadBtn = document.getElementById('downloadFrameBtn');
-        const originalText = downloadBtn.textContent;
-        downloadBtn.textContent = '⏳ Downloading...';
+        const originalHTML = downloadBtn.innerHTML;
+        downloadBtn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
         downloadBtn.disabled = true;
 
         // Decode base64 payload to binary
@@ -853,7 +886,7 @@
 
         // Reset button after download completes
         setTimeout(() => {
-          downloadBtn.textContent = originalText;
+          downloadBtn.innerHTML = originalHTML;
           downloadBtn.disabled = false;
           downloadInProgress = false;
         }, 1000);
@@ -861,8 +894,7 @@
         showError('Failed to download frame: ' + error.message);
         // Reset on error
         downloadInProgress = false;
-        const downloadBtn = document.getElementById('downloadFrameBtn');
-        downloadBtn.textContent = '⬇️ Download';
+        downloadBtn.innerHTML = originalHTML;
         downloadBtn.disabled = false;
       }
     }
