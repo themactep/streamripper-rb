@@ -109,54 +109,7 @@
     .frame-type.audio { background: #1976d2; }
     .frame-type.unknown { background: #d32f2f; }
 
-    .capture-modal {
-      display: none;
-      position: fixed;
-      z-index: 2000;
-      left: 0;
-      top: 0;
-      width: 100%;
-      height: 100%;
-      background-color: rgba(0, 0, 0, 0.7);
-      justify-content: center;
-      align-items: center;
-    }
 
-    .capture-modal.active {
-      display: flex;
-    }
-
-    .capture-modal-content {
-      background: white;
-      padding: 2.5rem;
-      border-radius: 0.75rem;
-      text-align: center;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-      min-width: 300px;
-    }
-
-    .capture-modal-text {
-      font-size: 1.2rem;
-      color: #333;
-      margin-bottom: 1rem;
-      font-weight: 500;
-    }
-
-    .capture-modal-countdown {
-      font-size: 2.5rem;
-      color: #667eea;
-      font-weight: bold;
-      font-family: 'Courier New', monospace;
-      margin: 1.25rem 0;
-    }
-
-    .capture-modal-subtext {
-      font-size: 0.9rem;
-      color: #666;
-      margin-top: 1rem;
-    }
-
-    /* Custom modal styles (kept for capture modal only) */
 
     .hex-dump {
     background: #1e1e1e;
@@ -202,14 +155,19 @@
           </div>
         </div>
 
-        <div class="capture-modal" id="captureModal">
-          <div class="capture-modal-content">
-            <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem; margin: 0 auto;">
-              <span class="visually-hidden">Loading...</span>
+        <!-- Capture Modal -->
+        <div id="captureModal" class="modal fade" tabindex="-1" role="dialog" aria-labelledby="captureModalLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+              <div class="modal-body text-center py-5">
+                <div class="spinner-border text-primary mb-4" role="status" style="width: 3rem; height: 3rem;">
+                  <span class="visually-hidden">Loading...</span>
+                </div>
+                <h5 class="modal-title mb-3" id="captureModalLabel">Capturing Stream...</h5>
+                <div class="fs-2 fw-bold text-primary font-monospace mb-3" id="countdownDisplay">0:00</div>
+                <p class="text-muted small">Please wait while the stream is being captured and analyzed</p>
+              </div>
             </div>
-            <div class="capture-modal-text">Capturing Stream...</div>
-            <div class="capture-modal-countdown" id="countdownDisplay">0:00</div>
-            <div class="capture-modal-subtext">Please wait while the stream is being captured and analyzed</div>
           </div>
         </div>
 
@@ -384,11 +342,12 @@
     return;
     }
 
-    // Show capture modal
-    const captureModal = document.getElementById('captureModal');
-    captureModal.classList.add('active');
-    document.getElementById('results').style.display = 'none';
-    document.getElementById('errorMsg').style.display = 'none';
+    // Show capture modal using Bootstrap API
+    const captureModalElement = document.getElementById('captureModal');
+    const captureModalInstance = new bootstrap.Modal(captureModalElement);
+    captureModalInstance.show();
+    document.getElementById('results').classList.add('d-none');
+    document.getElementById('errorMsg').classList.add('d-none');
 
     // Preset the countdown display with initial value
     const countdownDisplay = document.getElementById('countdownDisplay');
@@ -449,10 +408,13 @@
           countdownInterval = null;
         }
 
-        // Hide capture modal
-        const captureModal = document.getElementById('captureModal');
-        captureModal.classList.remove('active');
-        document.getElementById('results').style.display = 'block';
+        // Hide capture modal using Bootstrap API
+        const captureModalElement = document.getElementById('captureModal');
+        const captureModalInstance = bootstrap.Modal.getInstance(captureModalElement);
+        if (captureModalInstance) {
+          captureModalInstance.hide();
+        }
+        document.getElementById('results').classList.remove('d-none');
       }
     }
 
