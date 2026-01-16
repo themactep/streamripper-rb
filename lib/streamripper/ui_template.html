@@ -165,6 +165,10 @@
                 <div class="fs-3 fw-bold" id="packetCount">0</div>
               </div>
               <div class="col">
+                <h5 class="text-white-50 mb-0">Total Bytes</h5>
+                <div class="fs-3 fw-bold" id="totalBytes">0</div>
+              </div>
+              <div class="col">
                 <h5 class="text-white-50 mb-0">Duration</h5>
                 <div class="fs-3 fw-bold" id="captureDuration">0s</div>
               </div>
@@ -289,6 +293,14 @@
     let packetSizeChart = null;
     let packetFlowChart = null;
 
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 bytes';
+      const k = 1024;
+      const sizes = ['bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
     async function startCapture() {
       const rtspUrl = document.getElementById('rtspUrl').value;
       const duration = parseInt(document.getElementById('duration').value);
@@ -401,6 +413,7 @@
 
       document.getElementById('frameCount').textContent = data.frame_count;
       document.getElementById('packetCount').textContent = data.packet_count;
+      document.getElementById('totalBytes').textContent = formatBytes(data.total_bytes);
       document.getElementById('captureDuration').textContent = data.duration + 's';
       document.getElementById('frameRate').textContent = (data.frame_count / data.duration).toFixed(2) + ' fps';
 
@@ -813,7 +826,7 @@
             ${thumbnail}
             <div class="card-body">
               <h6 class="card-title small fw-bold text-truncate">${scan.scan_id} (${scan.duration}s)</h6>
-              <p class="card-text small text-muted">${scan.packet_count} packets | ${scan.frame_count} frames</p>
+              <p class="card-text small text-muted">${scan.packet_count} packets | ${scan.frame_count} frames | ${formatBytes(scan.total_bytes)}</p>
             </div>
           </div>
         `;

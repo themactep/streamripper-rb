@@ -420,11 +420,15 @@ module Streamripper
       host = File.basename(output_mgr.stream_dir)
       scan_id = File.basename(output_mgr.run_dir)
 
+      # Calculate total bytes transferred
+      total_bytes = frames.sum { |f| f[:total_size] }
+
       {
         status: 'success',
         packet_count: packet_count,
         frame_count: frames.length,
         duration: (Time.now - start_time).round(2),
+        total_bytes: total_bytes,
         frames: frames,
         host: host,
         scan_id: scan_id
@@ -516,11 +520,15 @@ module Streamripper
         }
       end
 
+      # Calculate total bytes transferred
+      total_bytes = frames.sum { |f| f[:total_size] }
+
       {
         status: 'success',
         packet_count: data.length,
         frame_count: frames.length,
         duration: duration,
+        total_bytes: total_bytes,
         frames: frames,
         packet_times: packet_times,
         host: host,
@@ -604,11 +612,15 @@ module Streamripper
             # Check if thumbnail exists
             has_thumbnail = File.exist?(thumbnail_file)
 
+            # Calculate total bytes transferred
+            total_bytes = data.sum { |p| p['raw_packet_size'] }
+
             scans << {
               host: host,
               scan_id: scan_id,
               packet_count: data.length,
               frame_count: data.map { |p| p['rtp_timestamp_raw'] }.uniq.length,
+              total_bytes: total_bytes,
               duration: duration,
               has_thumbnail: has_thumbnail,
               thumbnail_url: has_thumbnail ? "/thumbnails/#{host}/#{scan_id}/thumbnail.jpg" : nil
